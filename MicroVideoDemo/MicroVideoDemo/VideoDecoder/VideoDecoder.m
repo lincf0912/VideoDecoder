@@ -17,6 +17,10 @@ block();\
 dispatch_async(dispatch_get_main_queue(), block);\
 }
 
+static NSString *const kExecutionCallbackKey = @"excutionCallBack";
+static NSString *const kCompletedCallbackKey = @"completedCallBack";
+static NSString *const kFailCallbackKey = @"failCallBack";
+
 @interface VideoOperation : NSBlockOperation
 
 @property (nonatomic, copy) VideoExecution executionBlock;
@@ -142,7 +146,8 @@ dispatch_async(dispatch_get_main_queue(), block);\
     NSOperationQueue *queue;
 }
 
-@property (nonatomic, strong) NSMutableDictionary *operationDic;
+@property (nonatomic, strong) NSMutableDictionary <NSString *, VideoOperation *>*operationDic;
+@property (nonatomic, strong) NSMutableDictionary <NSString *, NSMutableArray *>*callbackDic;
 
 @end
 @implementation VideoDecoder
@@ -164,6 +169,7 @@ dispatch_async(dispatch_get_main_queue(), block);\
         queue = [[NSOperationQueue alloc] init];
         [queue setMaxConcurrentOperationCount:3];
         _operationDic = [NSMutableDictionary dictionary];
+        _callbackDic = [NSMutableDictionary dictionary];
     }return self;
 }
 
@@ -180,6 +186,7 @@ dispatch_async(dispatch_get_main_queue(), block);\
 
 - (void)cancelAllQueue;
 {
+    [_callbackDic removeAllObjects];
     [_operationDic removeAllObjects];
     [queue cancelAllOperations];
 }
@@ -194,33 +201,58 @@ dispatch_async(dispatch_get_main_queue(), block);\
         
         VideoOperation *operation = [_operationDic objectForKey:_currentDecodeFilePath];
         
+        NSMutableArray *callbacksForURL = self.callbackDic[_currentDecodeFilePath];
+        if (callbacksForURL == nil) {
+            callbacksForURL = [@[] mutableCopy];
+        }
+        NSMutableDictionary *callbacks = [NSMutableDictionary new];
+        if (executionBlock) callbacks[kExecutionCallbackKey] = [executionBlock copy];
+        if (completeBlock) callbacks[kCompletedCallbackKey] = [completeBlock copy];
+        if (failBlock) callbacks[kFailCallbackKey] = [failBlock copy];
+        [callbacksForURL addObject:callbacks];
+        self.callbackDic[_currentDecodeFilePath] = callbacksForURL;
+        
         /** 是否需要创建线程 */
         if (operation == nil) {
             operation = [[VideoOperation alloc] initWithPath:_currentDecodeFilePath];
             [operation startExecutionBlock];
             [_operationDic setObject:operation forKey:_currentDecodeFilePath];
             [queue addOperation:operation];
-        }
-        
-        operation.executionBlock = executionBlock;
-        
-        VideoComplete copyCompleteBlock = [completeBlock copy];
-        __weak typeof(self) weakSelf = self;
-        [operation setCompleteBlock:^(NSString *path, BOOL isCancel) {
-            /** 因为operation自身的completionBlock使用主线程，导致自身早已被释放无法回调，必须在这里添加线程 */
-            dispatch_main_async_safe(^{
+            
+            
+            __weak typeof(self) weakSelf = self;
+            operation.executionBlock = ^(CGImageRef imageData, NSString *path){
+                NSArray *callbackList = [weakSelf.callbackDic[path] copy];
+                for (NSDictionary *callbacks in callbackList) {
+                    VideoExecution callback = callbacks[kExecutionCallbackKey];
+                    if (callback) callback(imageData, path);
+                }
+            };
+            
+            [operation setCompleteBlock:^(NSString *path, BOOL isCancel) {
+                /** 因为operation自身的completionBlock使用主线程，导致自身早已被释放无法回调，必须在这里添加线程 */
+                dispatch_main_async_safe(^{
+                    NSArray *callbackList = [weakSelf.callbackDic[path] copy];
+                    [weakSelf.operationDic removeObjectForKey:path];
+                    [weakSelf.callbackDic removeObjectForKey:path];
+                    for (NSDictionary *callbacks in callbackList) {
+                        VideoComplete callback = callbacks[kCompletedCallbackKey];
+                        if (callback) callback(path, isCancel);
+                    }
+                });
+            }];
+            
+            
+            [operation setFailBlock:^(NSString *path) {
+                NSArray *callbackList = [weakSelf.callbackDic[path] copy];
                 [weakSelf.operationDic removeObjectForKey:path];
-                if (copyCompleteBlock) copyCompleteBlock(path, isCancel);
-            });
-        }];
-        
-        VideoFail copyFailBlock = [failBlock copy];
-        [operation setFailBlock:^(NSString *path) {
-            [weakSelf.operationDic removeObjectForKey:path];
-            if (copyFailBlock) copyFailBlock(path);
-        }];
-        
-        
+                [weakSelf.callbackDic removeObjectForKey:path];
+                for (NSDictionary *callbacks in callbackList) {
+                    VideoFail callback = callbacks[kFailCallbackKey];
+                    if (callback) callback(path);
+                }
+            }];
+        }
     } else {
         NSLog(@"小视频没有运行解析操作");
     }
