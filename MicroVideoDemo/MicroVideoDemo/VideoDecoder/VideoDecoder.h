@@ -34,5 +34,7 @@ typedef void (^VideoFail) (NSString *path);
 - (void)cancelAllQueue;
 /** 取消播放 */
 - (void)cancelQueue:(NSString *)path;
+/** 是否播放 */
+- (BOOL)isTransromVideo:(NSString *)path;
 
 @end

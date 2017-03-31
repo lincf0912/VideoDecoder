@@ -258,4 +258,10 @@ static NSString *const kFailCallbackKey = @"failCallBack";
     }
 }
 
+#pragma mark - 是否播放
+- (BOOL)isTransromVideo:(NSString *)path
+{
+    return [_operationDic objectForKey:path] != nil;
+}
+
 @end
